@@ -52,7 +52,10 @@ class SpotifyHandler:
             'playlist': [
                 r'spotify\.com/playlist/([a-zA-Z0-9]+)',
                 r'spotify:playlist:([a-zA-Z0-9]+)',
-                r'open\.spotify\.com/playlist/([a-zA-Z0-9]+)'
+                r'open\.spotify\.com/playlist/([a-zA-Z0-9]+)',
+                # Radio playlists
+                r'spotify\.com/station/playlist/([a-zA-Z0-9]+)',
+                r'open\.spotify\.com/station/playlist/([a-zA-Z0-9]+)'
             ],
             'album': [
                 r'spotify\.com/album/([a-zA-Z0-9]+)',
@@ -103,15 +106,10 @@ class SpotifyHandler:
             duration_ms = track.get('duration_ms', 0)
             duration = duration_ms // 1000 if duration_ms and isinstance(duration_ms, int) else 0
             
-            # Extract track information
+            # Extract track information with simplified artist
             track_info = {
                 'name': track.get('name', 'Unknown'),
-                'artists': artist_names,
-                'duration': duration,
-                'album': album_name,
-                'release_date': album_info.get('release_date', 'Unknown') if album_info else 'Unknown',
-                'popularity': track.get('popularity', 0),
-                'external_urls': track.get('external_urls', {}),
+                'artist': artist_names[0],  # Just take first artist
                 'search_query': f"{artist_names[0]} {track.get('name', 'Unknown')}"
             }
             
@@ -130,14 +128,14 @@ class SpotifyHandler:
                 return None
 
     async def get_playlist_info(self, playlist_id):
-        """Get playlist information and tracks from Spotify API"""
+        """Get playlist information and tracks from Spotify API (no auth required for public playlists)"""
         if not self.enabled:
             return None, []
         
         try:
             loop = asyncio.get_event_loop()
             
-            # Get playlist details
+            # Get playlist details - works for public playlists without OAuth
             playlist = await loop.run_in_executor(None, self.spotify.playlist, playlist_id)
             
             playlist_info = {
@@ -145,62 +143,68 @@ class SpotifyHandler:
                 'description': playlist.get('description', ''),
                 'owner': playlist.get('owner', {}).get('display_name', 'Unknown'),
                 'total_tracks': playlist.get('tracks', {}).get('total', 0),
-                'external_urls': playlist.get('external_urls', {})
+                'public': playlist.get('public', True)  # Check if public
             }
             
-            # Get playlist tracks (limit to 50 for performance)
-            tracks_data = await loop.run_in_executor(
-                None, 
-                lambda: self.spotify.playlist_tracks(playlist_id, limit=50, offset=0)
-            )
+            # Get all playlist tracks (not just 50)
+            all_tracks = []
+            offset = 0
+            limit = 100
             
-            tracks = []
-            for item in tracks_data.get('items', []):
-                # Skip if item or track is None
-                if not item or not item.get('track'):
-                    continue
+            while True:
+                tracks_data = await loop.run_in_executor(
+                    None, 
+                    lambda: self.spotify.playlist_tracks(playlist_id, limit=limit, offset=offset)
+                )
+                
+                items = tracks_data.get('items', [])
+                if not items:
+                    break
+                
+                for item in items:
+                    # Skip if item or track is None
+                    if not item or not item.get('track'):
+                        continue
+                        
+                    track = item['track']
                     
-                track = item['track']
-                
-                # Skip if track is None or missing essential data
-                if not track or not track.get('name') or not track.get('artists'):
-                    continue
-                
-                # Safely extract artist names
-                artists = track.get('artists', [])
-                if not artists or not isinstance(artists, list) or len(artists) == 0:
-                    continue
-                
-                try:
-                    artist_names = [artist.get('name', 'Unknown') for artist in artists if artist and isinstance(artist, dict)]
-                    if not artist_names:
+                    # Skip if track is None or missing essential data
+                    if not track or not track.get('name') or not track.get('artists'):
                         continue
                     
-                    # Only keep essential data for playback
-                    track_info = {
-                        'name': track.get('name', 'Unknown'),
-                        'artist': artist_names[0],
-                        'search_query': f"{artist_names[0]} {track.get('name', 'Unknown')}"
-                    }
-                    tracks.append(track_info)
+                    # Safely extract artist names
+                    artists = track.get('artists', [])
+                    if not artists or not isinstance(artists, list) or len(artists) == 0:
+                        continue
                     
-                except Exception as track_error:
-                    print(f"Error processing track '{track.get('name', 'Unknown')}': {track_error}")
-                    continue
+                    try:
+                        artist_names = [artist.get('name', 'Unknown') for artist in artists if artist and isinstance(artist, dict)]
+                        if not artist_names:
+                            continue
+                        
+                        # Simplified track info for playback
+                        track_info = {
+                            'name': track.get('name', 'Unknown'),
+                            'artist': artist_names[0],
+                            'search_query': f"{artist_names[0]} {track.get('name', 'Unknown')}"
+                        }
+                        all_tracks.append(track_info)
+                        
+                    except Exception as track_error:
+                        print(f"Error processing track '{track.get('name', 'Unknown')}': {track_error}")
+                        continue
+                
+                offset += limit
+                if len(items) < limit:  # Last page
+                    break
             
-            return playlist_info, tracks
+            return playlist_info, all_tracks
             
         except Exception as e:
             error_msg = str(e).lower()
-            if "404" in error_msg or "not found" in error_msg:
-                print(f"Spotify playlist not found or private: {playlist_id}")
-                return "not_found", []
-            elif "403" in error_msg or "forbidden" in error_msg:
-                print(f"Spotify playlist access denied: {playlist_id}")
-                return "access_denied", []
-            else:
-                print(f"Error getting Spotify playlist {playlist_id}: {e}")
-                return None, []
+            print(f"Error getting Spotify playlist {playlist_id}: {e}")
+            # Return simplified error info
+            return None, []
 
     async def get_first_track_from_playlist(self, playlist_id):
         """Get only the first track from a playlist for immediate playback"""
@@ -245,6 +249,44 @@ class SpotifyHandler:
             
         except Exception as e:
             print(f"Error getting first track from playlist {playlist_id}: {e}")
+            return None
+
+    async def get_first_track_from_album(self, album_id):
+        """Get only the first track from an album for immediate playback"""
+        if not self.enabled:
+            return None
+        
+        try:
+            loop = asyncio.get_event_loop()
+            
+            # Get album and first track
+            album = await loop.run_in_executor(None, self.spotify.album, album_id)
+            
+            album_tracks = album.get('tracks', {}).get('items', [])
+            if not album_tracks:
+                return None
+            
+            track = album_tracks[0]
+            if not track or not track.get('name') or not track.get('artists'):
+                return None
+            
+            # Safely extract artist names
+            artists = track.get('artists', [])
+            if not artists or not isinstance(artists, list) or len(artists) == 0:
+                return None
+            
+            artist_names = [artist.get('name', 'Unknown') for artist in artists if artist and isinstance(artist, dict)]
+            if not artist_names:
+                return None
+            
+            return {
+                'name': track.get('name', 'Unknown'),
+                'artist': artist_names[0],
+                'search_query': f"{artist_names[0]} {track.get('name', 'Unknown')}"
+            }
+            
+        except Exception as e:
+            print(f"Error getting first track from album {album_id}: {e}")
             return None
 
     async def get_album_info(self, album_id):
@@ -292,10 +334,10 @@ class SpotifyHandler:
                     duration_ms = track.get('duration_ms', 0)
                     duration = duration_ms // 1000 if duration_ms and isinstance(duration_ms, int) else 0
                     
+                    # Simplified track info for albums
                     track_info = {
                         'name': track.get('name', 'Unknown'),
-                        'artists': artist_names,
-                        'duration': duration,
+                        'artist': artist_names[0],
                         'album': album.get('name', 'Unknown Album'),
                         'search_query': f"{artist_names[0]} {track.get('name', 'Unknown')}"
                     }
@@ -308,16 +350,8 @@ class SpotifyHandler:
             return album_info, tracks
             
         except Exception as e:
-            error_msg = str(e).lower()
-            if "404" in error_msg or "not found" in error_msg:
-                print(f"Spotify album not found: {album_id}")
-                return "not_found", []
-            elif "403" in error_msg or "forbidden" in error_msg:
-                print(f"Spotify album access denied: {album_id}")
-                return "access_denied", []
-            else:
-                print(f"Error getting Spotify album {album_id}: {e}")
-                return None, []
+            print(f"Error getting Spotify album {album_id}: {e}")
+            return None, []
 
     async def search_track(self, query, limit=1):
         """Search for tracks on Spotify"""

@@ -5,7 +5,7 @@ import asyncio
 import discord
 from typing import Dict, List, Optional, Any
 from audio_source import AudioSource, YTDLSource
-from spotify_auth import SpotifyHandler
+from spotify_handler import SpotifyHandler
 from config import Config
 import logging
 

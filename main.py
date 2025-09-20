@@ -9,7 +9,7 @@ import logging
 from typing import Optional
 
 from config import Config
-from spotify_auth import SpotifyHandler
+from spotify_handler import SpotifyHandler
 from music_player import MusicManager, Track
 from audio_source import AudioSource
 
@@ -100,57 +100,31 @@ async def play(ctx, *, query: str):
         await thinking_msg.edit(content="An error occurred while processing your request.")
 
 async def handle_spotify_content(ctx, url: str, thinking_msg, player):
-    """Handle Spotify URL processing"""
+    """Handle Spotify URL processing - simplified without authentication"""
     content_type, content_id = spotify_handler.extract_spotify_info(url)
-    user_id = str(ctx.author.id)
     
     if content_type == 'playlist':
-        # Check if user needs authentication for private playlists
-        if not spotify_handler.is_user_authenticated(user_id):
-            auth_url = spotify_handler.get_auth_url_for_user(user_id)
-            if auth_url:
-                embed = discord.Embed(
-                    title="Spotify Authentication Required",
-                    description=f"To access your private playlists, please [click here to authenticate]({auth_url})",
-                    color=discord.Color.blue()
-                )
-                embed.add_field(
-                    name="Note",
-                    value="Authentication is only needed for private/collaborative playlists. Public playlists work without authentication.",
-                    inline=False
-                )
-                await thinking_msg.edit(content="", embed=embed)
-                # Try without authentication for public playlists
-                user_id = None
-            else:
-                await thinking_msg.edit(content="Spotify authentication not available.")
-                return
-        
-        await handle_spotify_playlist(ctx, content_id, thinking_msg, player, user_id)
-    
+        await handle_spotify_playlist(ctx, content_id, thinking_msg, player)
     elif content_type == 'track':
-        await handle_spotify_track(ctx, content_id, thinking_msg, player, user_id)
-    
+        await handle_spotify_track(ctx, content_id, thinking_msg, player)
     elif content_type == 'album':
-        await thinking_msg.edit(content="Album support coming soon!")
-    
+        await handle_spotify_album(ctx, content_id, thinking_msg, player)
     else:
-        await thinking_msg.edit(content="Invalid Spotify URL.")
+        await thinking_msg.edit(content="❌ Invalid Spotify URL.")
 
-async def handle_spotify_playlist(ctx, playlist_id: str, thinking_msg, player, user_id: Optional[str]):
-    """Handle Spotify playlist with optimized loading"""
+async def handle_spotify_playlist(ctx, playlist_id: str, thinking_msg, player):
+    """Handle Spotify playlist with optimized loading - no auth required"""
     # Get first track for immediate playback
-    first_track_info = await spotify_handler.get_first_track_from_playlist(playlist_id, user_id)
+    first_track_info = await spotify_handler.get_first_track_from_playlist(playlist_id)
     
     if not first_track_info:
-        await thinking_msg.edit(content="Could not access playlist or playlist is empty.")
+        await thinking_msg.edit(content="❌ Could not access playlist or playlist is empty.")
         return
     
     # Create and add first track
     first_track = Track.from_spotify(
         first_track_info['name'],
-        first_track_info['artist'],
-        user_id
+        first_track_info['artist']
     )
     
     try:
@@ -163,15 +137,15 @@ async def handle_spotify_playlist(ctx, playlist_id: str, thinking_msg, player, u
             await player.play_next(ctx)
         
         # Process remaining tracks in background
-        asyncio.create_task(process_spotify_playlist_background(ctx, playlist_id, player, user_id))
+        asyncio.create_task(process_spotify_playlist_background(ctx, playlist_id, player))
         
     except ValueError as e:
-        await thinking_msg.edit(content=f"{str(e)}")
+        await thinking_msg.edit(content=f"❌ {str(e)}")
 
-async def process_spotify_playlist_background(ctx, playlist_id: str, player, user_id: Optional[str]):
+async def process_spotify_playlist_background(ctx, playlist_id: str, player):
     """Process remaining playlist tracks in background"""
     try:
-        playlist_info, tracks = await spotify_handler.get_playlist_info(playlist_id, user_id)
+        playlist_info, tracks = await spotify_handler.get_playlist_info(playlist_id)
         
         if not tracks or len(tracks) <= 1:
             return
@@ -179,7 +153,7 @@ async def process_spotify_playlist_background(ctx, playlist_id: str, player, use
         # Skip first track (already added)
         remaining_tracks = tracks[1:]
         spotify_tracks = [
-            Track.from_spotify(track['name'], track['artist'], user_id)
+            Track.from_spotify(track['name'], track['artist'])
             for track in remaining_tracks
         ]
         
@@ -201,15 +175,15 @@ async def process_spotify_playlist_background(ctx, playlist_id: str, player, use
     except Exception as e:
         logger.error(f"Error processing Spotify playlist background: {e}")
 
-async def handle_spotify_track(ctx, track_id: str, thinking_msg, player, user_id: Optional[str]):
+async def handle_spotify_track(ctx, track_id: str, thinking_msg, player):
     """Handle single Spotify track"""
-    track_info = await spotify_handler.get_track_info(track_id, user_id)
+    track_info = await spotify_handler.get_track_info(track_id)
     
     if not track_info:
-        await thinking_msg.edit(content="Could not get track information.")
+        await thinking_msg.edit(content="❌ Could not get track information.")
         return
     
-    track = Track.from_spotify(track_info['name'], track_info['artist'], user_id)
+    track = Track.from_spotify(track_info['name'], track_info['artist'])
     
     try:
         position = player.queue.add_track(track)
@@ -226,7 +200,67 @@ async def handle_spotify_track(ctx, track_id: str, thinking_msg, player, user_id
             await player.play_next(ctx)
             
     except ValueError as e:
-        await thinking_msg.edit(content=f"{str(e)}")
+        await thinking_msg.edit(content=f"❌ {str(e)}")
+
+async def handle_spotify_album(ctx, album_id: str, thinking_msg, player):
+    """Handle Spotify album with optimized loading"""
+    # Get first track for immediate playback
+    first_track_info = await spotify_handler.get_first_track_from_album(album_id)
+    
+    if not first_track_info:
+        await thinking_msg.edit(content="❌ Could not access album or album is empty.")
+        return
+    
+    # Create and add first track
+    first_track = Track.from_spotify(
+        first_track_info['name'],
+        first_track_info['artist']
+    )
+    
+    try:
+        player.queue.add_track(first_track)
+        
+        await thinking_msg.edit(content=f"🎵 **Spotify Album Started**\nPlaying: **{first_track}**\nProcessing remaining tracks...")
+        
+        # Start playing if nothing is currently playing
+        if not player.is_playing():
+            await player.play_next(ctx)
+        
+        # Process remaining tracks in background
+        asyncio.create_task(process_spotify_album_background(ctx, album_id, player))
+        
+    except ValueError as e:
+        await thinking_msg.edit(content=f"❌ {str(e)}")
+
+async def process_spotify_album_background(ctx, album_id: str, player):
+    """Process remaining album tracks in background"""
+    try:
+        album_info, tracks = await spotify_handler.get_album_info(album_id)
+        
+        if not tracks or len(tracks) <= 1:
+            return
+        
+        # Skip first track (already added)
+        remaining_tracks = tracks[1:]
+        spotify_tracks = [
+            Track.from_spotify(track['name'], track['artist'])
+            for track in remaining_tracks
+        ]
+        
+        added_count = player.queue.add_tracks(spotify_tracks)
+        
+        if album_info and isinstance(album_info, dict):
+            album_name = album_info.get('name', 'Unknown Album')
+            embed = discord.Embed(
+                title="✅ Spotify Album Loaded",
+                description=f"**{album_name}**\nAdded {added_count} more tracks to queue.",
+                color=discord.Color.green()
+            )
+            
+            await ctx.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Error processing Spotify album background: {e}")
 
 async def handle_youtube_content(ctx, query: str, thinking_msg, player):
     """Handle YouTube search or URL"""
@@ -367,64 +401,6 @@ async def clear_queue(ctx):
     else:
         await ctx.send("Queue is already empty!")
 
-@bot.command(name='spotify_auth')
-async def spotify_auth(ctx):
-    """Get Spotify authentication link"""
-    user_id = str(ctx.author.id)
-    
-    if spotify_handler.is_user_authenticated(user_id):
-        await ctx.send("✅ You are already authenticated with Spotify!")
-        return
-    
-    auth_url = spotify_handler.get_auth_url_for_user(user_id)
-    
-    if auth_url:
-        embed = discord.Embed(
-            title="🎵 Spotify Authentication",
-            description=f"[Click here to authenticate with Spotify]({auth_url})",
-            color=discord.Color.green()
-        )
-        embed.add_field(
-            name="Why authenticate?",
-            value="Authentication allows access to your private playlists and personal music library.",
-            inline=False
-        )
-        await ctx.send(embed=embed)
-    else:
-        await ctx.send("Spotify authentication is not available.")
-
-@bot.command(name='my_playlists')
-async def my_playlists(ctx):
-    """Show user's Spotify playlists"""
-    user_id = str(ctx.author.id)
-    
-    if not spotify_handler.is_user_authenticated(user_id):
-        await ctx.send("You need to authenticate with Spotify first! Use `/spotify_auth`")
-        return
-    
-    playlists = await spotify_handler.get_user_playlists(user_id)
-    
-    if not playlists:
-        await ctx.send("No playlists found.")
-        return
-    
-    embed = discord.Embed(
-        title="🎵 Your Spotify Playlists",
-        color=discord.Color.green()
-    )
-    
-    playlist_list = ""
-    for i, playlist in enumerate(playlists[:10], 1):
-        privacy = "🔒" if not playlist['public'] else "🌐"
-        playlist_list += f"{i}. {privacy} **{playlist['name']}** ({playlist['tracks_total']} tracks)\n"
-    
-    embed.description = playlist_list
-    
-    if len(playlists) > 10:
-        embed.set_footer(text=f"Showing 10 of {len(playlists)} playlists")
-    
-    await ctx.send(embed=embed)
-
 @bot.command(name='help_music')
 async def help_music(ctx):
     """Show music bot help"""
@@ -441,9 +417,7 @@ async def help_music(ctx):
         ("**/resume**", "Resume playback"),
         ("**/stop**", "Stop and disconnect"),
         ("**/queue**", "Show current queue"),
-        ("**/clear**", "Clear queue"),
-        ("**/spotify_auth**", "Authenticate with Spotify"),
-        ("**/my_playlists**", "Show your Spotify playlists")
+        ("**/clear**", "Clear queue")
     ]
     
     for cmd, desc in commands_list:
@@ -451,13 +425,13 @@ async def help_music(ctx):
     
     embed.add_field(
         name="🎵 Supported Sources",
-        value="• **YouTube** - URLs and search\n• **Spotify** - Tracks, playlists (including private)\n• **Auto-search** - Just type song names!",
+        value="• **YouTube** - URLs and search\n• **Spotify** - Tracks, playlists, albums, radio playlists\n• **Auto-search** - Just type song names!",
         inline=False
     )
     
     embed.add_field(
-        name="🔒 Private Playlists",
-        value="Use `/spotify_auth` to access your private Spotify playlists and personal library.",
+        name="🎵 Spotify Support",
+        value="Works with public Spotify content without authentication:\n• Individual tracks\n• Public playlists\n• Albums\n• Radio playlists",
         inline=False
     )
     

@@ -1,0 +1,9 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python main.py"
+
+[env]
+NIXPACKS_PYTHON_VERSION = "3.11"
+NIXPACKS_APT_PACKAGES = "ffmpeg"
