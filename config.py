@@ -43,6 +43,21 @@ class Config:
         'no_warnings': True,
         'default_search': 'auto',
         'source_address': '0.0.0.0',
+        # Anti-bot detection measures
+        'extractor_args': {
+            'youtube': {
+                'skip': ['dash', 'hls'],
+                'player_skip': ['configs', 'webpage']
+            }
+        },
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        },
+        # Add retry and timeout options
+        'retries': 3,
+        'socket_timeout': 30,
+        'sleep_interval': 1,
+        'max_sleep_interval': 5,
     }
     
     @classmethod
