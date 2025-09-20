@@ -90,6 +90,15 @@ ENV/
 env.bak/
 venv.bak/
 
+# Platform-specific deployment files
+Procfile
+app.json
+railway.toml
+runtime.txt
+
+# Render build artifacts
+.render-buildpacks-cache/
+
 # Spyder project settings
 .spyderproject
 .spyproject
